@@ -29,6 +29,7 @@ interface AuthContextType {
   addCustomTopic: (topic: Topic) => void;
   removeCustomTopic: (topicId: string) => void;
   updateNewsletter: (enabled: boolean, email?: string) => void;
+  saveAll: (updates: { name?: string; email?: string; topics?: TopicId[]; newsletter?: Newsletter }) => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -149,9 +150,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user, persist]
   );
 
+  const saveAll = useCallback(
+    (updates: { name?: string; email?: string; topics?: TopicId[]; newsletter?: Newsletter }) => {
+      if (!user) return;
+      persist({ ...user, ...updates });
+    },
+    [user, persist]
+  );
+
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, login, signup, logout, updateTopics, updateProfile, addCustomTopic, removeCustomTopic, updateNewsletter }}
+      value={{ user, isLoading, login, signup, logout, updateTopics, updateProfile, addCustomTopic, removeCustomTopic, updateNewsletter, saveAll }}
     >
       {children}
     </AuthContext.Provider>

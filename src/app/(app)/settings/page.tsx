@@ -9,7 +9,7 @@ import { Check, Loader2, Search, Plus } from "lucide-react";
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { user, isLoading, updateTopics, updateProfile, addCustomTopic, removeCustomTopic, updateNewsletter } = useAuth();
+  const { user, isLoading, updateTopics, updateProfile, addCustomTopic, removeCustomTopic, updateNewsletter, saveAll } = useAuth();
   const [selectedTopics, setSelectedTopics] = useState<TopicId[]>([]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -116,11 +116,15 @@ export default function SettingsPage() {
   };
 
   const handleSave = () => {
-    updateProfile(name, email);
-    updateTopics(selectedTopics);
-    if (user?.newsletter) {
-      updateNewsletter(user.newsletter.enabled, newsletterEmail);
-    }
+    saveAll({
+      name,
+      email,
+      topics: selectedTopics,
+      newsletter: {
+        enabled: user?.newsletter?.enabled ?? false,
+        email: newsletterEmail,
+      },
+    });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
