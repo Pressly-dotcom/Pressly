@@ -71,12 +71,16 @@ export default function SettingsPage() {
     return !alreadyExists && !alreadySelected;
   }, [search, allKnownTopics, selectedTopics]);
 
-  if (isLoading || !user) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Loader2 className="animate-spin text-ink-muted" size={24} />
       </div>
     );
+  }
+
+  if (!user) {
+    return null;
   }
 
   const toggleTopic = (id: TopicId) => {

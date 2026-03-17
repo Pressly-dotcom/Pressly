@@ -97,13 +97,6 @@ export default function DashboardPage() {
     try {
       const res = await fetch("/api/newsletter/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: user.name,
-          email: user.newsletter?.email || user.email,
-          topics: user.topics,
-          customTopics: user.customTopics ?? [],
-        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -117,12 +110,16 @@ export default function DashboardPage() {
     }
   };
 
-  if (isLoading || !user) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
         <Loader2 className="animate-spin text-ink-muted" size={24} />
       </div>
     );
+  }
+
+  if (!user) {
+    return null;
   }
 
   const today = new Date();

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { type Topic } from "@/lib/mock-data";
+import { createClient } from "@/lib/supabase/server";
 
 const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -213,15 +214,29 @@ function buildEmailHtml(name: string, articles: Article[]): string {
 </body></html>`;
 }
 
-export async function POST(request: Request) {
+export async function POST() {
   try {
-    const body = await request.json();
-    const { name, email, topics, customTopics = [] }: {
-      name: string;
-      email: string;
-      topics: string[];
-      customTopics: Topic[];
-    } = body;
+    // Authenticate and fetch profile from DB
+    const supabase = await createClient();
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", authUser.id)
+      .single();
+
+    if (!profile) {
+      return NextResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+
+    const name: string = profile.name;
+    const email: string = profile.newsletter_email || profile.email;
+    const topics: string[] = profile.topics ?? [];
+    const customTopics: Topic[] = profile.custom_topics ?? [];
 
     if (!email || !topics?.length) {
       return NextResponse.json({ error: "Missing email or topics" }, { status: 400 });

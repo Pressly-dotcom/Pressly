@@ -30,8 +30,8 @@ export default function SignupPage() {
     try {
       await signup(name, email, password);
       router.push("/settings");
-    } catch {
-      setError("Une erreur est survenue.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Une erreur est survenue.");
     } finally {
       setLoading(false);
     }

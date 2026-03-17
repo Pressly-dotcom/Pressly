@@ -25,8 +25,8 @@ export default function LoginPage() {
     try {
       await login(email, password);
       router.push("/dashboard");
-    } catch {
-      setError("Identifiants incorrects.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Identifiants incorrects.");
     } finally {
       setLoading(false);
     }

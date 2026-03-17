@@ -1,7 +1,8 @@
 "use client";
 
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import type { TopicId, Topic } from "./mock-data";
+import { createClient } from "./supabase/client";
 
 interface Newsletter {
   enabled: boolean;
@@ -34,99 +35,123 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-const STORAGE_KEY = "pressly_user";
+// Map DB row (snake_case) to frontend User (camelCase)
+function mapProfileToUser(profile: Record<string, unknown>): User {
+  return {
+    id: profile.id as string,
+    name: profile.name as string,
+    email: profile.email as string,
+    topics: (profile.topics as TopicId[]) ?? [],
+    customTopics: (profile.custom_topics as Topic[]) ?? [],
+    newsletter: {
+      enabled: (profile.newsletter_enabled as boolean) ?? false,
+      email: (profile.newsletter_email as string) ?? (profile.email as string),
+    },
+    createdAt: profile.created_at as string,
+  };
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const supabase = useRef(createClient()).current;
 
-  useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        // Migrations
-        if (!parsed.customTopics) parsed.customTopics = [];
-        if (!parsed.newsletter) parsed.newsletter = { enabled: false, email: parsed.email ?? "" };
-        setUser(parsed);
-      } catch {
-        localStorage.removeItem(STORAGE_KEY);
-      }
+  // Fetch profile from Supabase
+  const fetchProfile = useCallback(async (userId: string) => {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", userId)
+      .single();
+
+    if (error || !data) {
+      setUser(null);
+      return;
     }
-    setIsLoading(false);
-  }, []);
 
-  const persist = useCallback((u: User) => {
-    setUser(u);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
-  }, []);
+    setUser(mapProfileToUser(data));
+  }, [supabase]);
+
+  // Listen for auth state changes
+  useEffect(() => {
+    // Check initial session with timeout
+    const timeout = setTimeout(() => setIsLoading(false), 3000);
+
+    supabase.auth.getUser().then(({ data: { user: authUser } }) => {
+      clearTimeout(timeout);
+      if (authUser) {
+        fetchProfile(authUser.id).finally(() => setIsLoading(false));
+      } else {
+        setIsLoading(false);
+      }
+    }).catch(() => {
+      clearTimeout(timeout);
+      setIsLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === "SIGNED_IN" && session?.user) {
+          await fetchProfile(session.user.id);
+        } else if (event === "SIGNED_OUT") {
+          setUser(null);
+        }
+      }
+    );
+
+    return () => subscription.unsubscribe();
+  }, [supabase, fetchProfile]);
+
+  // Persist updates to Supabase
+  const persistToDb = useCallback(
+    async (updates: Record<string, unknown>) => {
+      if (!user) return;
+      await supabase.from("profiles").update(updates).eq("id", user.id);
+    },
+    [user, supabase]
+  );
 
   const login = useCallback(
-    async (email: string, _password: string) => {
-      await new Promise((r) => setTimeout(r, 600));
-      // Restore existing user data if same email
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        try {
-          const existing = JSON.parse(stored);
-          if (existing.email === email) {
-            if (!existing.customTopics) existing.customTopics = [];
-            if (!existing.newsletter) existing.newsletter = { enabled: false, email };
-            persist(existing);
-            return;
-          }
-        } catch { /* ignore */ }
-      }
-      const u: User = {
-        id: "1",
-        name: email.split("@")[0],
-        email,
-        topics: ["tech", "ia", "finance"],
-        customTopics: [],
-        newsletter: { enabled: false, email },
-        createdAt: new Date().toISOString(),
-      };
-      persist(u);
+    async (email: string, password: string) => {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw new Error(error.message);
     },
-    [persist]
+    [supabase]
   );
 
   const signup = useCallback(
-    async (name: string, email: string, _password: string) => {
-      await new Promise((r) => setTimeout(r, 600));
-      const u: User = {
-        id: "1",
-        name,
+    async (name: string, email: string, password: string) => {
+      const { error } = await supabase.auth.signUp({
         email,
-        topics: [],
-        customTopics: [],
-        newsletter: { enabled: false, email },
-        createdAt: new Date().toISOString(),
-      };
-      persist(u);
+        password,
+        options: { data: { name } },
+      });
+      if (error) throw new Error(error.message);
     },
-    [persist]
+    [supabase]
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    await supabase.auth.signOut();
     setUser(null);
-    // Keep localStorage so user data persists across login/logout
-  }, []);
+  }, [supabase]);
 
   const updateTopics = useCallback(
     (topics: TopicId[]) => {
       if (!user) return;
-      persist({ ...user, topics });
+      setUser({ ...user, topics });
+      persistToDb({ topics });
     },
-    [user, persist]
+    [user, persistToDb]
   );
 
   const updateProfile = useCallback(
     (name: string, email: string) => {
       if (!user) return;
-      persist({ ...user, name, email });
+      setUser({ ...user, name, email });
+      persistToDb({ name, email });
     },
-    [user, persist]
+    [user, persistToDb]
   );
 
   const addCustomTopic = useCallback(
@@ -136,9 +161,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (exists) return;
       const customTopics = [...user.customTopics, { ...topic, isCustom: true }];
       const topics = [...user.topics, topic.id];
-      persist({ ...user, customTopics, topics });
+      setUser({ ...user, customTopics, topics });
+      persistToDb({ custom_topics: customTopics, topics });
     },
-    [user, persist]
+    [user, persistToDb]
   );
 
   const removeCustomTopic = useCallback(
@@ -146,9 +172,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!user) return;
       const customTopics = user.customTopics.filter((t) => t.id !== topicId);
       const topics = user.topics.filter((t) => t !== topicId);
-      persist({ ...user, customTopics, topics });
+      setUser({ ...user, customTopics, topics });
+      persistToDb({ custom_topics: customTopics, topics });
     },
-    [user, persist]
+    [user, persistToDb]
   );
 
   const updateNewsletter = useCallback(
@@ -158,17 +185,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         enabled,
         email: email ?? user.newsletter?.email ?? user.email,
       };
-      persist({ ...user, newsletter });
+      setUser({ ...user, newsletter });
+      persistToDb({ newsletter_enabled: newsletter.enabled, newsletter_email: newsletter.email });
     },
-    [user, persist]
+    [user, persistToDb]
   );
 
   const saveAll = useCallback(
     (updates: { name?: string; email?: string; topics?: TopicId[]; newsletter?: Newsletter }) => {
       if (!user) return;
-      persist({ ...user, ...updates });
+      setUser({ ...user, ...updates });
+      // Map to DB columns
+      const dbUpdates: Record<string, unknown> = {};
+      if (updates.name !== undefined) dbUpdates.name = updates.name;
+      if (updates.email !== undefined) dbUpdates.email = updates.email;
+      if (updates.topics !== undefined) dbUpdates.topics = updates.topics;
+      if (updates.newsletter !== undefined) {
+        dbUpdates.newsletter_enabled = updates.newsletter.enabled;
+        dbUpdates.newsletter_email = updates.newsletter.email;
+      }
+      persistToDb(dbUpdates);
     },
-    [user, persist]
+    [user, persistToDb]
   );
 
   return (
