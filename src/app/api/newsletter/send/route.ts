@@ -227,24 +227,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing email or topics" }, { status: 400 });
     }
 
-    // Fetch articles for all topics
-    const allArticles = await Promise.all(
-      topics.map(t => fetchTopicArticles(t, customTopics))
-    );
-    const articles = allArticles.flat();
+    // Fetch articles sequentially to avoid GNews rate limiting
+    const allArticles: Article[] = [];
+    for (const t of topics) {
+      const topicArticles = await fetchTopicArticles(t, customTopics);
+      allArticles.push(...topicArticles);
+      // Small delay between requests to avoid rate limiting
+      if (topics.indexOf(t) < topics.length - 1) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
 
     if (!RESEND_API_KEY || RESEND_API_KEY === "your_resend_api_key") {
       // Simulate mode — log to console and return success
-      console.log(`[Newsletter] Simulated send to ${email} — ${articles.length} articles`);
-      return NextResponse.json({ success: true, simulated: true, articleCount: articles.length });
+      console.log(`[Newsletter] Simulated send to ${email} — ${allArticles.length} articles`);
+      return NextResponse.json({ success: true, simulated: true, articleCount: allArticles.length });
     }
 
-    if (!GNEWS_API_KEY || articles.length === 0) {
+    if (!GNEWS_API_KEY || allArticles.length === 0) {
       return NextResponse.json({ error: "NO_ARTICLES" }, { status: 200 });
     }
 
     const resend = new Resend(RESEND_API_KEY);
-    const html = buildEmailHtml(name, articles);
+    const html = buildEmailHtml(name, allArticles);
 
     const { error } = await resend.emails.send({
       // Pour un domaine perso : "Pressly <newsletter@pressly.fr>"
@@ -260,7 +265,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, articleCount: articles.length });
+    return NextResponse.json({ success: true, articleCount: allArticles.length });
   } catch (err) {
     console.error("[Newsletter] Error:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
