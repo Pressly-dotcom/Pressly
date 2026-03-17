@@ -64,6 +64,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (email: string, _password: string) => {
       await new Promise((r) => setTimeout(r, 600));
+      // Restore existing user data if same email
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        try {
+          const existing = JSON.parse(stored);
+          if (existing.email === email) {
+            if (!existing.customTopics) existing.customTopics = [];
+            if (!existing.newsletter) existing.newsletter = { enabled: false, email };
+            persist(existing);
+            return;
+          }
+        } catch { /* ignore */ }
+      }
       const u: User = {
         id: "1",
         name: email.split("@")[0],
@@ -97,7 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     setUser(null);
-    localStorage.removeItem(STORAGE_KEY);
+    // Keep localStorage so user data persists across login/logout
   }, []);
 
   const updateTopics = useCallback(
