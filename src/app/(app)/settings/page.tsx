@@ -15,6 +15,7 @@ export default function SettingsPage() {
   const [email, setEmail] = useState("");
   const [saved, setSaved] = useState(false);
   const [newsletterEmail, setNewsletterEmail] = useState("");
+  const [newsletterEnabled, setNewsletterEnabled] = useState(false);
   const [search, setSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
@@ -28,6 +29,7 @@ export default function SettingsPage() {
       setName(user.name);
       setEmail(user.email);
       setNewsletterEmail(user.newsletter?.email || user.email);
+      setNewsletterEnabled(user.newsletter?.enabled ?? false);
     }
   }, [user, isLoading, router]);
 
@@ -125,7 +127,7 @@ export default function SettingsPage() {
       email,
       topics: selectedTopics,
       newsletter: {
-        enabled: user?.newsletter?.enabled ?? false,
+        enabled: newsletterEnabled,
         email: newsletterEmail,
       },
     });
@@ -291,13 +293,13 @@ export default function SettingsPage() {
             </div>
             <button
               type="button"
-              onClick={() => { updateNewsletter(!user?.newsletter?.enabled, newsletterEmail); setSaved(false); }}
+              onClick={() => { setNewsletterEnabled(!newsletterEnabled); setSaved(false); }}
               className={`relative w-11 h-6 rounded-full transition-colors ${
-                user?.newsletter?.enabled ? "bg-accent" : "bg-ink/20"
+                newsletterEnabled ? "bg-accent" : "bg-ink/20"
               }`}
             >
               <span className={`absolute left-0 top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all duration-200 ${
-                user?.newsletter?.enabled ? "translate-x-[22px]" : "translate-x-[2px]"
+                newsletterEnabled ? "translate-x-[22px]" : "translate-x-[2px]"
               }`} />
             </button>
           </div>
@@ -316,7 +318,7 @@ export default function SettingsPage() {
             />
           </div>
 
-          {user?.newsletter?.enabled && (
+          {newsletterEnabled && (
             <p className="text-xs text-accent font-medium flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-accent"></span>
               Newsletter activée — prochain envoi demain à 9h
