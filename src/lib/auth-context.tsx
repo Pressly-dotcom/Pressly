@@ -132,9 +132,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await supabase.auth.signOut();
     setUser(null);
-    window.location.href = "/login";
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Continue even if signOut fails
+    }
+    window.location.replace("/login");
   }, [supabase]);
 
   const updateTopics = useCallback(
