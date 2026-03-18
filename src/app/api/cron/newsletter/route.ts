@@ -1,11 +1,18 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
 import { type Topic } from "@/lib/mock-data";
-import { createClient } from "@/lib/supabase/server";
 
 const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const CRON_SECRET = process.env.CRON_SECRET;
 const GNEWS_BASE = "https://gnews.io/api/v4";
+
+// Use service role key to bypass RLS and read all profiles
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 const TOPIC_KEYWORDS: Record<string, string> = {
   tech: "technologie OR numérique OR high-tech OR innovation",
@@ -76,7 +83,12 @@ interface Article {
   readTime: number;
 }
 
+// Cache articles per topic to avoid duplicate GNews calls for users with same topics
+const articleCache = new Map<string, Article[]>();
+
 async function fetchTopicArticles(topicId: string, customTopics: Topic[]): Promise<Article[]> {
+  if (articleCache.has(topicId)) return articleCache.get(topicId)!;
+
   const query = TOPIC_KEYWORDS[topicId] ?? customTopics.find(t => t.id === topicId)?.label ?? topicId;
   const url = `${GNEWS_BASE}/search?q=${encodeURIComponent(query)}&lang=fr&max=5&apikey=${GNEWS_API_KEY}`;
 
@@ -87,7 +99,7 @@ async function fetchTopicArticles(topicId: string, customTopics: Topic[]): Promi
     const articles: GNewsArticle[] = data.articles ?? [];
     const label = TOPIC_LABELS[topicId] ?? customTopics.find(t => t.id === topicId)?.label ?? topicId;
 
-    return articles.slice(0, 3).map(a => ({
+    const result = articles.slice(0, 3).map(a => ({
       title: a.title,
       summary: a.description ?? "",
       source: a.source?.name ?? "Source inconnue",
@@ -97,6 +109,9 @@ async function fetchTopicArticles(topicId: string, customTopics: Topic[]): Promi
       publishedAt: a.publishedAt,
       readTime: Math.max(2, Math.ceil((a.description?.length ?? 100) / 200)),
     }));
+
+    articleCache.set(topicId, result);
+    return result;
   } catch {
     return [];
   }
@@ -119,8 +134,8 @@ function timeAgo(iso: string): string {
 
 function buildEmailHtml(name: string, articles: Article[]): string {
   const today = formatDate(new Date().toISOString());
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://presslyyy.vercel.app";
 
-  // Group by topic
   const byTopic = articles.reduce<Record<string, Article[]>>((acc, a) => {
     if (!acc[a.topicLabel]) acc[a.topicLabel] = [];
     acc[a.topicLabel].push(a);
@@ -198,7 +213,7 @@ function buildEmailHtml(name: string, articles: Article[]): string {
       <td><span style="font-family:Georgia,serif;font-size:16px;font-weight:700;
         color:#F5F0E8;">Pressly</span></td>
       <td align="right">
-        <a href="${process.env.NEXT_PUBLIC_SITE_URL || 'https://presslyyy.vercel.app'}/settings"
+        <a href="${siteUrl}/settings"
           style="font-family:'DM Sans',Arial,sans-serif;font-size:12px;color:#6B5E52;
           text-decoration:none;">Se désabonner</a>
       </td>
@@ -214,75 +229,90 @@ function buildEmailHtml(name: string, articles: Article[]): string {
 </body></html>`;
 }
 
-export async function POST() {
+export async function GET(request: NextRequest) {
   try {
-    // Authenticate and fetch profile from DB
-    const supabase = await createClient();
-    const { data: { user: authUser } } = await supabase.auth.getUser();
-    if (!authUser) {
+    // Verify cron secret to prevent unauthorized calls
+    const authHeader = request.headers.get("authorization");
+    if (CRON_SECRET && authHeader !== `Bearer ${CRON_SECRET}`) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: profile } = await supabase
+    // Fetch all users with newsletter enabled
+    const { data: profiles, error: dbError } = await supabaseAdmin
       .from("profiles")
       .select("*")
-      .eq("id", authUser.id)
-      .single();
+      .eq("newsletter_enabled", true);
 
-    if (!profile) {
-      return NextResponse.json({ error: "Profile not found" }, { status: 404 });
+    if (dbError) {
+      console.error("[Cron] DB error:", dbError);
+      return NextResponse.json({ error: "Database error" }, { status: 500 });
     }
 
-    const name: string = profile.name;
-    const email: string = profile.newsletter_email || profile.email;
-    const topics: string[] = profile.topics ?? [];
-    const customTopics: Topic[] = profile.custom_topics ?? [];
-
-    if (!email || !topics?.length) {
-      return NextResponse.json({ error: "Missing email or topics" }, { status: 400 });
+    if (!profiles || profiles.length === 0) {
+      return NextResponse.json({ message: "No subscribers", sent: 0 });
     }
 
-    // Fetch articles sequentially to avoid GNews rate limiting
-    const allArticles: Article[] = [];
-    for (const t of topics) {
-      const topicArticles = await fetchTopicArticles(t, customTopics);
-      allArticles.push(...topicArticles);
-      // Small delay between requests to avoid rate limiting
-      if (topics.indexOf(t) < topics.length - 1) {
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
-
-    if (!RESEND_API_KEY || RESEND_API_KEY === "your_resend_api_key") {
-      // Simulate mode — log to console and return success
-      console.log(`[Newsletter] Simulated send to ${email} — ${allArticles.length} articles`);
-      return NextResponse.json({ success: true, simulated: true, articleCount: allArticles.length });
-    }
-
-    if (!GNEWS_API_KEY || allArticles.length === 0) {
-      return NextResponse.json({ error: "NO_ARTICLES" }, { status: 200 });
+    if (!RESEND_API_KEY || !GNEWS_API_KEY) {
+      return NextResponse.json({ error: "Missing API keys" }, { status: 500 });
     }
 
     const resend = new Resend(RESEND_API_KEY);
-    const html = buildEmailHtml(name, allArticles);
+    let sent = 0;
+    let errors = 0;
 
-    const { error } = await resend.emails.send({
-      // Pour un domaine perso : "Pressly <newsletter@pressly.fr>"
-      // Sans domaine vérifié, Resend utilise le sandbox (envoi limité à ton email)
-      from: process.env.RESEND_FROM_EMAIL || "Pressly <onboarding@resend.dev>",
-      to: email,
-      subject: `Pressly — Votre revue du ${formatDate(new Date().toISOString())}`,
-      html,
-    });
+    // Clear article cache for fresh results
+    articleCache.clear();
 
-    if (error) {
-      console.error("[Newsletter] Resend error:", error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    for (const profile of profiles) {
+      const email = profile.newsletter_email || profile.email;
+      const topics: string[] = profile.topics ?? [];
+      const customTopics: Topic[] = profile.custom_topics ?? [];
+      const name: string = profile.name || "lecteur";
+
+      if (!email || topics.length === 0) continue;
+
+      // Fetch articles for this user's topics
+      const allArticles: Article[] = [];
+      for (const t of topics) {
+        const topicArticles = await fetchTopicArticles(t, customTopics);
+        allArticles.push(...topicArticles);
+        // Delay between requests to avoid GNews rate limiting
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      if (allArticles.length === 0) continue;
+
+      const html = buildEmailHtml(name, allArticles);
+
+      try {
+        const { error } = await resend.emails.send({
+          from: process.env.RESEND_FROM_EMAIL || "Pressly <onboarding@resend.dev>",
+          to: email,
+          subject: `Pressly — Votre revue du ${formatDate(new Date().toISOString())}`,
+          html,
+        });
+
+        if (error) {
+          console.error(`[Cron] Failed to send to ${email}:`, error);
+          errors++;
+        } else {
+          sent++;
+          console.log(`[Cron] Newsletter sent to ${email} (${allArticles.length} articles)`);
+        }
+      } catch (err) {
+        console.error(`[Cron] Error sending to ${email}:`, err);
+        errors++;
+      }
     }
 
-    return NextResponse.json({ success: true, articleCount: allArticles.length });
+    return NextResponse.json({
+      message: `Newsletter cron completed`,
+      sent,
+      errors,
+      total: profiles.length,
+    });
   } catch (err) {
-    console.error("[Newsletter] Error:", err);
+    console.error("[Cron] Error:", err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }
