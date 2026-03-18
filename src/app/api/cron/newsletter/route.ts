@@ -8,11 +8,15 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const CRON_SECRET = process.env.CRON_SECRET;
 const GNEWS_BASE = "https://gnews.io/api/v4";
 
-// Use service role key to bypass RLS and read all profiles
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Lazy-init to avoid crash when SUPABASE_SERVICE_ROLE_KEY is not set (dev)
+function getSupabaseAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY or SUPABASE_URL");
+  }
+  return createClient(url, key);
+}
 
 const TOPIC_KEYWORDS: Record<string, string> = {
   tech: "technologie OR numérique OR high-tech OR innovation",
@@ -238,6 +242,8 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch all users with newsletter enabled
+    const supabaseAdmin = getSupabaseAdmin();
+
     const { data: profiles, error: dbError } = await supabaseAdmin
       .from("profiles")
       .select("*")
